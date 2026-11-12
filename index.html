@@ -1,0 +1,203 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<title>Gan Airport FOD Report</title>
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
+<style>
+*{box-sizing:border-box}html,body{height:100%;margin:0;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Arial,sans-serif}
+body{background:#eef2f5;color:#17212b}header{height:54px;background:#0b2638;color:#fff;display:flex;align-items:center;padding:0 14px;position:relative;z-index:1000}
+header .title{font-size:16px;font-weight:800}header small{display:block;font-size:10px;font-weight:400;opacity:.8}
+#map{height:calc(100vh - 54px);width:100%}
+.topbar{position:fixed;z-index:1200;top:66px;left:12px;right:12px;display:flex;gap:8px;pointer-events:none}
+.topbar button{pointer-events:auto}
+button{border:0;border-radius:12px;padding:12px 13px;font-size:14px;font-weight:800;background:#0b2638;color:#fff;box-shadow:0 2px 8px rgba(0,0,0,.22)}
+button.light{background:rgba(255,255,255,.96);color:#17212b}
+button.report{background:#b3261e}
+.gpsbox{position:fixed;z-index:1200;left:12px;right:12px;bottom:16px;background:rgba(255,255,255,.96);border-radius:14px;padding:10px 12px;box-shadow:0 3px 18px rgba(0,0,0,.2);font-size:12px}
+.gpsbox b{font-size:13px}.muted{color:#63727d}.ok{color:#167447}.err{color:#b3261e}
+.modal{position:fixed;z-index:3000;inset:0;background:rgba(0,0,0,.48);display:none;align-items:flex-end}.modal.show{display:flex}
+.sheet{width:100%;max-height:92vh;overflow:auto;background:#fff;border-radius:20px 20px 0 0;padding:18px}
+h2{margin:0 0 12px;font-size:20px}label{display:block;font-size:12px;font-weight:800;margin:10px 0 5px}
+input,select,textarea{width:100%;padding:11px;border:1px solid #c8d0d7;border-radius:9px;font-size:15px;background:#fff}
+textarea{min-height:78px;resize:vertical}.grid{display:grid;grid-template-columns:1fr 1fr;gap:9px}
+.actions{display:flex;gap:8px;margin-top:15px}.actions button{flex:1}
+.fod-pin{font-size:27px;line-height:27px;text-shadow:0 1px 3px #fff}
+.leaflet-control-attribution{font-size:9px}
+</style>
+</head>
+<body>
+<header><div><div class="title">GAN AIRPORT — FOD REPORT</div><small>Live GPS • precise map location • photo report</small></div></header>
+<div id="map"></div>
+
+<div class="topbar">
+  <button id="locateBtn">📍 My Location</button>
+  <button id="reportBtn" class="report">⚠️ Report FOD</button>
+</div>
+
+<div class="gpsbox">
+  <b id="gpsTitle">GPS: waiting</b>
+  <div id="gpsDetails" class="muted">Tap My Location to get your live position.</div>
+</div>
+
+<div id="modal" class="modal">
+<div class="sheet">
+<h2>Report FOD</h2>
+<div class="grid">
+<div><label>Latitude</label><input id="lat" readonly></div>
+<div><label>Longitude</label><input id="lng" readonly></div>
+<div><label>UTC Time</label><input id="utc" readonly></div>
+<div><label>Accuracy</label><input id="acc" readonly></div>
+</div>
+<label>FOD Type</label>
+<select id="type">
+<option>Foreign object / debris</option>
+<option>Stone / aggregate</option>
+<option>Metal object</option>
+<option>Plastic / rubber</option>
+<option>Bird / animal remains</option>
+<option>Vegetation</option>
+<option>Loose cable / electrical item</option>
+<option>Other</option>
+</select>
+<label>Description</label>
+<textarea id="desc" placeholder="Describe the FOD, size, colour, exact position, etc."></textarea>
+<label>Photo</label>
+<input id="photo" type="file" accept="image/*" capture="environment">
+<div class="actions">
+<button class="light" id="cancel">Cancel</button>
+<button id="save">Save FOD Report</button>
+</div>
+</div>
+</div>
+
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<script>
+const ARP=[-0.693333,73.155556];
+const RWY10=[-0.6906110048,73.1384963989];
+const RWY28=[-0.6946669817,73.1647033691];
+
+const map=L.map('map',{zoomControl:true}).setView(ARP,17);
+
+const satellite=L.tileLayer(
+ 'https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}',
+ {maxZoom:20,attribution:'© Esri'}
+).addTo(map);
+
+const street=L.tileLayer(
+ 'https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png',
+ {maxZoom:20,attribution:'© OpenStreetMap contributors'}
+);
+
+L.control.layers(
+ {'🛰 Satellite':satellite,'🗺 Street':street},
+ null,
+ {position:'topright'}
+).addTo(map);
+
+let userMarker=null,accuracyCircle=null,lastPos=null;
+
+function setStatus(title,detail,cls=''){
+ const t=document.getElementById('gpsTitle');
+ const d=document.getElementById('gpsDetails');
+ t.textContent=title;t.className=cls;
+ d.textContent=detail;
+}
+
+function showPosition(p){
+ const lat=p.coords.latitude,lng=p.coords.longitude,acc=p.coords.accuracy;
+ lastPos={lat,lng,acc};
+ const pos=[lat,lng];
+
+ if(!userMarker){
+   userMarker=L.marker(pos,{zIndexOffset:2000}).addTo(map);
+ }else userMarker.setLatLng(pos);
+
+ userMarker.bindPopup('<b>YOU ARE HERE</b><br>Accuracy ±'+Math.round(acc)+' m').openPopup();
+
+ if(!accuracyCircle){
+   accuracyCircle=L.circle(pos,{radius:acc,weight:1,fillOpacity:.08}).addTo(map);
+ }else{
+   accuracyCircle.setLatLng(pos).setRadius(acc);
+ }
+
+ setStatus('GPS ACTIVE',
+   `Latitude ${lat.toFixed(7)} • Longitude ${lng.toFixed(7)} • Accuracy ±${Math.round(acc)} m`,
+   'ok'
+ );
+
+ map.setView(pos,19,{animate:true});
+}
+
+function getGPS(){
+ if(!navigator.geolocation){
+   setStatus('GPS NOT SUPPORTED','This browser does not provide location services.','err');return;
+ }
+ setStatus('REQUESTING GPS','Please allow location access when the browser asks.');
+ navigator.geolocation.getCurrentPosition(showPosition,error=>{
+   let msg='Unable to obtain GPS.';
+   if(error.code===1) msg='Location permission was denied. Enable location access for this site.';
+   if(error.code===2) msg='Position unavailable. Move outdoors and try again.';
+   if(error.code===3) msg='GPS timed out. Tap My Location again.';
+   setStatus('GPS ERROR',msg,'err');
+ },{enableHighAccuracy:true,timeout:20000,maximumAge:0});
+}
+
+document.getElementById('locateBtn').onclick=getGPS;
+
+function openReport(){
+ if(!lastPos){
+   alert('First tap My Location so the phone obtains GPS.');
+   getGPS();
+   return;
+ }
+ document.getElementById('lat').value=lastPos.lat.toFixed(7);
+ document.getElementById('lng').value=lastPos.lng.toFixed(7);
+ document.getElementById('acc').value='±'+Math.round(lastPos.acc)+' m';
+ document.getElementById('utc').value=new Date().toISOString().replace('T',' ').replace('Z',' UTC');
+ document.getElementById('modal').classList.add('show');
+}
+document.getElementById('reportBtn').onclick=openReport;
+document.getElementById('cancel').onclick=()=>document.getElementById('modal').classList.remove('show');
+
+document.getElementById('save').onclick=()=>{
+ if(!lastPos)return;
+
+ const report={
+  id:Date.now(),
+  latitude:lastPos.lat,
+  longitude:lastPos.lng,
+  accuracy:lastPos.acc,
+  utc:new Date().toISOString(),
+  type:document.getElementById('type').value,
+  description:document.getElementById('desc').value
+ };
+
+ const reports=JSON.parse(localStorage.getItem('gan_fod_reports')||'[]');
+ reports.push(report);
+ localStorage.setItem('gan_fod_reports',JSON.stringify(reports));
+
+ const icon=L.divIcon({
+   className:'fod-pin',
+   html:'⚠️',
+   iconSize:[30,30],
+   iconAnchor:[15,15]
+ });
+ L.marker([report.latitude,report.longitude],{icon})
+  .addTo(map)
+  .bindPopup(
+   '<b>FOD REPORT</b><br>'+
+   report.type+'<br>'+
+   (report.description||'No description')+
+   '<br><small>'+report.utc+'</small>'
+  )
+  .openPopup();
+
+ document.getElementById('modal').classList.remove('show');
+ document.getElementById('desc').value='';
+ alert('FOD report saved.');
+};
+</script>
+</body>
+</html>
